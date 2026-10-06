@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   ArrowDownRight,
   ArrowRight,
-  CalendarDays,
   Check,
   Clock3,
   Coffee,
+  Briefcase,
+  ChevronLeft,
+  ChevronRight,
   Plus,
   Sparkles,
   Target,
@@ -30,20 +32,23 @@ import {
   formatTime,
   getAssistantResponse,
   getBudget,
+  createSuggestedSchedule,
   getSuggestion,
   minutesBetween,
 } from "./services/planner";
 import { loadData, saveData } from "./services/storage";
-import type { Category, MochimoData, ScheduleBlock, Task } from "./types";
+import type { Category, MochimoData, ScheduleBlock, Task, TaskArea } from "./types";
 
 type ChatMessage = { role: "mochi" | "you"; text: string };
 
 export default function App() {
   const [data, setData] = useState<MochimoData>(loadData);
-  const [activeView, setActiveView] = useState<View>("Dashboard");
+  const [activeView, setActiveView] = useState<View>("Whiteboard");
   const [taskToEdit, setTaskToEdit] = useState<Task | undefined>();
+  const [taskDefaultArea, setTaskDefaultArea] = useState<TaskArea>("work");
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
+  const [scheduleDefaultDate, setScheduleDefaultDate] = useState(new Date());
 
   useEffect(() => saveData(data), [data]);
 
@@ -62,6 +67,16 @@ export default function App() {
     });
     setTaskDialogOpen(false);
     setTaskToEdit(undefined);
+  }
+
+  function advanceTask(task: Task) {
+    const nextStatus: Task["status"] = task.status === "todo" ? "in-progress" : task.status === "in-progress" ? "done" : "todo";
+    setData((current) => ({
+      ...current,
+      tasks: current.tasks.map((item) => item.id === task.id
+        ? { ...item, status: nextStatus, actualMinutes: nextStatus === "done" ? (item.actualMinutes ?? item.estimatedMinutes) : item.actualMinutes }
+        : item),
+    }));
   }
 
   function toggleTask(task: Task) {
@@ -87,8 +102,21 @@ export default function App() {
     setScheduleDialogOpen(false);
   }
 
-  function openTask(task?: Task) {
+  function openSchedule(date = new Date()) {
+    setScheduleDefaultDate(date);
+    setScheduleDialogOpen(true);
+  }
+
+  function saveSuggestedPlan(date: Date, blocks: ScheduleBlock[]) {
+    setData((current) => {
+      if (current.schedule.some((block) => sameDay(block.start, date))) return current;
+      return { ...current, schedule: [...current.schedule, ...blocks] };
+    });
+  }
+
+  function openTask(task?: Task, area: TaskArea = "work") {
     setTaskToEdit(task);
+    setTaskDefaultArea(area);
     setTaskDialogOpen(true);
   }
 
@@ -98,23 +126,99 @@ export default function App() {
       <main className="main-area">
         <div className="mobile-brand"><MochiFace size="small" /><span>mochimo<span className="brand-period">.</span></span><span className="mobile-day">{shortDate()}</span></div>
         <div className="mobile-nav">
-          {(["Dashboard", "Tasks", "Planner", "Time Budget", "Mochi AI"] as View[]).map((view) => (
+          {(["Whiteboard", "Dashboard", "Tasks", "Planner", "Time Budget", "Mochi AI"] as View[]).map((view) => (
             <button key={view} className={activeView === view ? "active" : ""} onClick={() => setActiveView(view)}>{view === "Time Budget" ? "Budget" : view === "Mochi AI" ? "Mochi" : view}</button>
           ))}
         </div>
         <div className="content-wrap">
-          {activeView === "Dashboard" && <Dashboard data={data} blocks={todayBlocks} progress={progress} openTasks={todayTasks} onNavigate={setActiveView} onEdit={openTask} onToggle={toggleTask} onAddBlock={() => setScheduleDialogOpen(true)} />}
+          {activeView === "Whiteboard" && <WhiteboardPage data={data} blocks={todayBlocks} onNavigate={setActiveView} onAddTask={(area) => openTask(undefined, area)} onEdit={openTask} onAdvance={advanceTask} onAddBlock={() => openSchedule()} />}
+          {activeView === "Dashboard" && <Dashboard data={data} blocks={todayBlocks} progress={progress} openTasks={todayTasks} onNavigate={setActiveView} onEdit={openTask} onToggle={toggleTask} onAddBlock={() => openSchedule()} />}
           {activeView === "Tasks" && <TasksPage data={data} onAdd={() => openTask()} onEdit={openTask} onToggle={toggleTask} onDelete={deleteTask} />}
-          {activeView === "Planner" && <PlannerPage data={data} blocks={todayBlocks} onAdd={() => setScheduleDialogOpen(true)} />}
+          {activeView === "Planner" && <PlannerPage data={data} onAdd={openSchedule} onSavePlan={saveSuggestedPlan} />}
           {activeView === "Time Budget" && <BudgetPage data={data} onChangeAvailable={(minutes) => setData((current) => ({ ...current, availableMinutes: minutes }))} />}
           {activeView === "Mochi AI" && <AssistantPage data={data} />}
         </div>
         <footer className="footer-note"><span>Made for your real life, not an ideal one.</span><span>✳ Mochimo prototype · your data stays in this browser</span></footer>
       </main>
-      {taskDialogOpen && <TaskDialog task={taskToEdit} onClose={() => { setTaskDialogOpen(false); setTaskToEdit(undefined); }} onSave={saveTask} />}
-      {scheduleDialogOpen && <ScheduleDialog onClose={() => setScheduleDialogOpen(false)} onSave={saveSchedule} />}
+      {taskDialogOpen && <TaskDialog task={taskToEdit} defaultArea={taskDefaultArea} onClose={() => { setTaskDialogOpen(false); setTaskToEdit(undefined); }} onSave={saveTask} />}
+      {scheduleDialogOpen && <ScheduleDialog defaultDate={scheduleDefaultDate} onClose={() => setScheduleDialogOpen(false)} onSave={saveSchedule} />}
     </div>
   );
+}
+
+function WhiteboardPage({ data, blocks, onNavigate, onAddTask, onEdit, onAdvance, onAddBlock }: {
+  data: MochimoData; blocks: ScheduleBlock[]; onNavigate: (view: View) => void; onAddTask: (area: TaskArea) => void;
+  onEdit: (task?: Task) => void; onAdvance: (task: Task) => void; onAddBlock: () => void;
+}) {
+  const workTasks = data.tasks.filter((task) => task.area === "work");
+  const personalTasks = data.tasks.filter((task) => task.area === "personal");
+  const target = new Date(2026, 9, 30, 17, 0, 0, 0);
+  const internshipEnd = new Date(2026, 10, 2, 17, 0, 0, 0);
+  const remainingWorkdays = countWeekdays(new Date(), target);
+  const workDone = workTasks.filter((task) => task.status === "done").length;
+  const personalDone = personalTasks.filter((task) => task.status === "done").length;
+  const focusTask = [...data.tasks.filter((task) => task.status !== "done")].sort((a, b) => {
+    const priority = { high: 0, medium: 1, low: 2 };
+    return priority[a.priority] - priority[b.priority] || new Date(a.deadline ?? "2999-01-01").getTime() - new Date(b.deadline ?? "2999-01-01").getTime();
+  })[0];
+  return <>
+    <PageHeading eyebrow="YOUR WHITEBOARD" title="A clear list for real life." subtitle="Keep internship goals, personal projects, and time to rest in one calm place." action={<button className="button primary desktop-add" onClick={() => onAddTask("work")}><Plus size={17} /> Add a task</button>} />
+    <section className="card whiteboard-deadline">
+      <div className="deadline-copy"><span className="eyebrow">YOUR FINISH LINE</span><h2>Key goals by Friday, October 30</h2><p>Wrap up the work plan before your internship ends on Monday, November 2. The game plan and first art milestone are personal targets for the same window.</p></div>
+      <div className="deadline-metrics"><div><strong>{remainingWorkdays}</strong><span>weekdays in this window</span></div><div><strong>{new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(internshipEnd)}</strong><span>internship ends</span></div></div>
+    </section>
+    <div className="whiteboard-summary">
+      <div className="card whiteboard-summary-card"><span className="summary-icon work-icon"><Briefcase size={17} /></span><div><strong>{workTasks.filter((task) => task.status !== "done").length}</strong><span>work items open</span></div><small>{workDone} completed</small></div>
+      <div className="card whiteboard-summary-card"><span className="summary-icon life-icon"><Sparkles size={17} /></span><div><strong>{personalTasks.filter((task) => task.status !== "done").length}</strong><span>personal items open</span></div><small>{personalDone} completed</small></div>
+      <div className="card whiteboard-summary-card ai-summary"><span className="summary-icon ai-icon"><Sparkles size={17} /></span><div><strong>MOCHI’S NEXT STEP</strong><span>{focusTask ? focusTask.title : "Everything is caught up."}</span></div><button className="mini-link" onClick={() => onNavigate("Mochi AI")}>Ask Mochi <ArrowRight size={14} /></button></div>
+    </div>
+    <div className="whiteboard-columns">
+      <WhiteboardLane area="work" title="Internship work" subtitle="Weekdays · 8:00 AM–5:30 PM · lunch 1:00–2:00 PM" tasks={workTasks} completed={workDone} onAdd={() => onAddTask("work")} onEdit={onEdit} onAdvance={onAdvance} />
+      <WhiteboardLane area="personal" title="Personal life" subtitle="Evenings and weekends · keep room for rest" tasks={personalTasks} completed={personalDone} onAdd={() => onAddTask("personal")} onEdit={onEdit} onAdvance={onAdvance} />
+    </div>
+    <section className="card whiteboard-timetable">
+      <div className="card-heading"><div><span className="eyebrow">TODAY’S TIMETABLE</span><h2>{longDate()}</h2><p className="timetable-caption">Your fixed morning and work hours are kept in place; task estimates can be changed anytime.</p></div><button className="button quiet timetable-open" onClick={() => onNavigate("Planner")}>Full planner <ArrowRight size={15} /></button></div>
+      <div className="whiteboard-schedule"><ScheduleList blocks={blocks} compact onAdd={onAddBlock} /></div>
+    </section>
+    <div className="whiteboard-disclosure"><Sparkles size={15} /><span><strong>Mochi plans gently.</strong> Suggestions use your task priorities, due dates, work hours and available time. This GitHub Pages version uses local planning rules; it does not connect to an external AI model.</span></div>
+  </>;
+}
+
+function WhiteboardLane({ area, title, subtitle, tasks, completed, onAdd, onEdit, onAdvance }: {
+  area: TaskArea; title: string; subtitle: string; tasks: Task[]; completed: number; onAdd: () => void;
+  onEdit: (task?: Task) => void; onAdvance: (task: Task) => void;
+}) {
+  const sorted = [...tasks].sort((a, b) => {
+    const status = { "in-progress": 0, todo: 1, done: 2 };
+    const priority = { high: 0, medium: 1, low: 2 };
+    return status[a.status] - status[b.status] || priority[a.priority] - priority[b.priority] || new Date(a.deadline ?? "2999-01-01").getTime() - new Date(b.deadline ?? "2999-01-01").getTime();
+  });
+  return <section className={`card whiteboard-lane ${area}`}>
+    <div className="lane-heading"><div><span className="eyebrow">{area === "work" ? "FOCUS BEFORE 5:30" : "TIME FOR YOUR LIFE"}</span><h2>{title}</h2><p>{subtitle}</p></div><span className="lane-count">{completed}/{tasks.length} done</span></div>
+    <div className="whiteboard-task-grid">
+      {sorted.map((task) => <article className={`whiteboard-task ${task.status}`} key={task.id} style={{ "--task-color": categoryColors[task.category] } as React.CSSProperties}>
+        <div className="wb-task-meta"><span className="wb-category">{categoryLabels[task.category]}</span><span className={`priority-pill ${task.priority}`}>{task.priority}</span></div>
+        <button className="wb-task-title" onClick={() => onEdit(task)}>{task.title}</button>
+        {task.notes && <p className="wb-task-note">{task.notes}</p>}
+        <div className="wb-task-footer"><span><Clock3 size={13} /> {formatDuration(task.estimatedMinutes)}</span><span className={`wb-status ${task.status}`}>{task.status === "in-progress" ? "Doing" : task.status === "done" ? "Done" : "To do"}</span></div>
+        <div className="wb-task-actions"><button onClick={() => onAdvance(task)}>{task.status === "todo" ? "Start task" : task.status === "in-progress" ? "Mark done" : "Reopen"}</button><button onClick={() => onEdit(task)}>Edit</button></div>
+        {task.deadline && <span className="wb-deadline">Due {new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(task.deadline))}</span>}
+      </article>)}
+      <button className="whiteboard-add-card" onClick={onAdd}><Plus size={17} /> Add {area === "work" ? "work" : "personal"} task</button>
+    </div>
+  </section>;
+}
+
+function countWeekdays(start: Date, end: Date) {
+  const day = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const last = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  let count = 0;
+  while (day <= last) {
+    const weekday = day.getDay();
+    if (weekday !== 0 && weekday !== 6) count += 1;
+    day.setDate(day.getDate() + 1);
+  }
+  return count;
 }
 
 function Dashboard({ data, blocks, progress, openTasks, onNavigate, onEdit, onToggle, onAddBlock }: {
@@ -130,7 +234,7 @@ function Dashboard({ data, blocks, progress, openTasks, onNavigate, onEdit, onTo
         <div className="progress-widget"><ProgressRing value={progress} /><span>daily progress</span><small>{data.tasks.filter((task) => task.status === "done").length} of {data.tasks.length} tasks done</small></div>
         <div className="welcome-decoration"><MochiFace /></div>
       </section>
-      <section className="card metric-card available-card"><div className="metric-top"><span className="metric-icon green"><Clock3 size={18} /></span><span className="metric-label">TIME FOR YOU TODAY</span></div><strong>{formatDuration(data.availableMinutes)}</strong><p>Time you’ve set aside for today</p><button className="mini-link" onClick={() => onNavigate("Time Budget")}>View your time budget <ArrowRight size={14} /></button></section>
+      <section className="card metric-card available-card"><div className="metric-top"><span className="metric-icon green"><Clock3 size={18} /></span><span className="metric-label">FOCUS TIME TODAY</span></div><strong>{formatDuration(data.availableMinutes)}</strong><p>Room for focused tasks and personal plans</p><button className="mini-link" onClick={() => onNavigate("Time Budget")}>View your time budget <ArrowRight size={14} /></button></section>
       <section className="card metric-card focus-card"><div className="metric-top"><span className="metric-icon lilac"><Target size={18} /></span><span className="metric-label">ON YOUR LIST</span></div><strong>{openTasks.length}<small> tasks</small></strong><p>{openTasks.filter((task) => task.priority === "high").length} high-priority · {data.tasks.filter((task) => task.status === "done").length} finished</p><button className="mini-link" onClick={() => onNavigate("Tasks")}>Open task list <ArrowRight size={14} /></button></section>
       <section className="card section-card today-card">
         <div className="card-heading"><div><span className="eyebrow">YOUR PLAN, WITH ROOM TO BREATHE</span><h2>Today’s flow</h2></div><button className="icon-button" onClick={() => onNavigate("Planner")} aria-label="View planner"><ArrowRight size={18} /></button></div>
@@ -166,19 +270,40 @@ function TasksPage({ data, onAdd, onEdit, onToggle, onDelete }: { data: MochimoD
   </>;
 }
 
-function PlannerPage({ data, blocks, onAdd }: { data: MochimoData; blocks: ScheduleBlock[]; onAdd: () => void }) {
-  const planned = blocks.reduce((sum, block) => sum + minutesBetween(block.start, block.end), 0);
+function PlannerPage({ data, onAdd, onSavePlan }: { data: MochimoData; onAdd: (date: Date) => void; onSavePlan: (date: Date, blocks: ScheduleBlock[]) => void }) {
+  const [selectedDay, setSelectedDay] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate()));
+  const days = weekDates(selectedDay);
+  const savedBlocks = useMemo(() => data.schedule.filter((block) => sameDay(block.start, selectedDay)), [data.schedule, selectedDay]);
+  const isDraft = savedBlocks.length === 0;
+  const blocks = useMemo(() => isDraft ? createSuggestedSchedule(selectedDay, data.tasks) : savedBlocks, [data.tasks, isDraft, savedBlocks, selectedDay]);
+  const planned = blocks.filter((block) => block.kind === "task").reduce((sum, block) => sum + minutesBetween(block.start, block.end), 0);
   const remaining = data.availableMinutes - planned;
+  const workday = selectedDay.getDay() > 0 && selectedDay.getDay() < 6;
+  const breakMinutes = blocks.filter((block) => block.kind === "break").reduce((sum, block) => sum + minutesBetween(block.start, block.end), 0);
+  const rangeStart = days[0];
+  const rangeEnd = days[6];
+  function shiftWeek(amount: number) {
+    const next = new Date(selectedDay);
+    next.setDate(next.getDate() + amount * 7);
+    setSelectedDay(next);
+  }
   return <>
-    <PageHeading eyebrow={longDate()} title="Your daily planner" subtitle="A flexible shape for the day, with space left unplanned." action={<button className="button primary" onClick={onAdd}><Plus size={17} /> Add time block</button>} />
+    <PageHeading eyebrow={longDate(selectedDay)} title="Your weekly planner" subtitle="Keep your work hours fixed, then place a few realistic tasks around lunch and personal time." action={<button className="button primary" onClick={() => onAdd(selectedDay)}><Plus size={17} /> Add time block</button>} />
+    <div className="planner-week-nav"><button className="icon-button" aria-label="Previous week" onClick={() => shiftWeek(-1)}><ChevronLeft size={17} /></button><strong>{new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(rangeStart)} – {new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(rangeEnd)}</strong><button className="icon-button" aria-label="Next week" onClick={() => shiftWeek(1)}><ChevronRight size={17} /></button></div>
+    <div className="planner-week-strip" aria-label="Choose a day">
+      {days.map((day) => <button key={day.toISOString()} className={sameDay(day.toISOString(), selectedDay) ? "active" : ""} onClick={() => setSelectedDay(day)}>
+        <span>{new Intl.DateTimeFormat("en", { weekday: "short" }).format(day)}</span><strong>{day.getDate()}</strong><small>{sameDay(day.toISOString(), new Date()) ? "Today" : ""}</small>
+      </button>)}
+    </div>
+    <div className="planner-controls"><span>{isDraft ? "Suggested outline · not saved yet" : "Saved plan"}{workday ? " · Workday" : " · Personal day"}</span><div>{isDraft && <button className="button quiet" onClick={() => onSavePlan(selectedDay, blocks)}><Check size={15} /> Save this plan</button>}<button className="button quiet" onClick={() => onAdd(selectedDay)}><Plus size={15} /> Add time block</button></div></div>
     <div className="planner-layout">
-      <section className="card planner-card"><div className="card-heading planner-heading"><div><span className="eyebrow">TODAY’S TIMELINE</span><h2>What your day looks like</h2></div><span className="today-chip"><span className="live-dot" /> Today</span></div>
-        <div className="timeline-hours"><span>9 AM</span><span>12 PM</span><span>3 PM</span><span>6 PM</span><span>9 PM</span></div>
-        {blocks.length === 0 ? <div className="empty-planner"><CalendarDays size={26} /><p>Your schedule is open.</p><span>Add a block when you’re ready, or enjoy the unscheduled time.</span></div> : <div className="timeline-list">{addOpenTime(blocks).map((item) => item.type === "gap" ? <div className="timeline-gap" key={item.id}><div className="timeline-time">{formatTime(item.start)}<span>{formatTime(item.end)}</span></div><div className="timeline-gap-line"><i /><span>{formatDuration(minutesBetween(item.start, item.end))} open · unscheduled time</span></div></div> : <div className={`timeline-block ${item.kind}`} key={item.id}><div className="timeline-time">{formatTime(item.start)}<span>{formatTime(item.end)}</span></div><div className="timeline-event" style={{ "--category-color": categoryColors[item.category] } as React.CSSProperties}><span className="event-kicker">{categoryLabels[item.category]} · {formatDuration(minutesBetween(item.start, item.end))}</span><strong>{item.title}</strong>{item.notes && <small>{item.notes}</small>}</div></div>)}</div>}
-        <button className="add-schedule planner-add" onClick={onAdd}><Plus size={15} /> Add a time block</button>
+      <section className="card planner-card"><div className="card-heading planner-heading"><div><span className="eyebrow">{workday ? "WORK + PERSONAL TIME" : "PERSONAL TIME + REST"}</span><h2>{new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric" }).format(selectedDay)}</h2></div><span className="today-chip"><span className="live-dot" />{workday ? "8:00–5:30" : "Open day"}</span></div>
+        <div className="timeline-hours"><span>7 AM</span><span>10 AM</span><span>1 PM</span><span>4 PM</span><span>7 PM</span><span>10 PM</span></div>
+        <div className="timeline-list">{addOpenTime(blocks).map((item) => item.type === "gap" ? <div className="timeline-gap" key={item.id}><div className="timeline-time">{formatTime(item.start)}<span>{formatTime(item.end)}</span></div><div className="timeline-gap-line"><i /><span>{formatDuration(minutesBetween(item.start, item.end))} open · unscheduled time</span></div></div> : <div className={`timeline-block ${item.kind}`} key={item.id}><div className="timeline-time">{formatTime(item.start)}<span>{formatTime(item.end)}</span></div><div className="timeline-event" style={{ "--category-color": categoryColors[item.category] } as React.CSSProperties}><span className="event-kicker">{categoryLabels[item.category]} · {formatDuration(minutesBetween(item.start, item.end))}</span><strong>{item.title}</strong>{item.notes && <small>{item.notes}</small>}</div></div>)}</div>
+        <button className="add-schedule planner-add" onClick={() => onAdd(selectedDay)}><Plus size={15} /> Add a time block</button>
       </section>
       <aside className="planner-aside">
-        <section className="card planner-day-card"><span className="eyebrow">YOUR TIME, YOURS</span><h3>Keep the plan kind.</h3><p>Leave a little margin for transitions, surprises, and simply being human.</p><div className="planner-stat"><span><Clock3 size={15} /> Planned</span><strong>{formatDuration(planned)}</strong></div><div className="planner-stat"><span><ArrowDownRight size={15} /> Unscheduled</span><strong className={remaining < 0 ? "text-danger" : ""}>{formatDuration(Math.abs(remaining))}{remaining < 0 ? " over" : ""}</strong></div><div className="planner-stat"><span><Coffee size={15} /> Breaks today</span><strong>{formatDuration(blocks.filter((block) => block.kind === "break").reduce((sum, block) => sum + minutesBetween(block.start, block.end), 0))}</strong></div></section>
+        <section className="card planner-day-card"><span className="eyebrow">YOUR TIME, YOURS</span><h3>Keep the plan kind.</h3><p>{workday ? "Your work window stays 8:00 AM–5:30 PM, with lunch protected from 1:00–2:00 PM." : "Keep this day light: one personal focus block, then plenty of room to rest or play."}</p><div className="planner-stat"><span><Clock3 size={15} /> Focus blocks</span><strong>{formatDuration(planned)}</strong></div><div className="planner-stat"><span><ArrowDownRight size={15} /> Unplanned focus time</span><strong className={remaining < 0 ? "text-danger" : ""}>{formatDuration(Math.abs(remaining))}{remaining < 0 ? " over" : ""}</strong></div><div className="planner-stat"><span><Coffee size={15} /> Breaks</span><strong>{formatDuration(breakMinutes)}</strong></div></section>
         <section className="card category-guide"><span className="eyebrow">YOUR LIFE, IN COLORS</span><h3>Different parts of you</h3>{(Object.keys(categoryLabels) as Category[]).filter((category) => category !== "free").map((category) => <div key={category}><i style={{ backgroundColor: categoryColors[category] }} /><span>{categoryLabels[category]}</span></div>)}</section>
       </aside>
     </div>
@@ -202,8 +327,8 @@ function BudgetPage({ data, onChangeAvailable }: { data: MochimoData; onChangeAv
 }
 
 function AssistantPage({ data }: { data: MochimoData }) {
-  const prompts = ["I have 2 hours tonight. What should I work on?", "Help me plan tomorrow.", "I have too many tasks.", "What should I focus on first?"];
-  const [messages, setMessages] = useState<ChatMessage[]>([{ role: "mochi", text: "Hi Xin Yee! I’m Mochi, your little planning buddy. Tell me what kind of time you have, and we’ll find a gentle place to start. 🌱" }]);
+  const prompts = ["Plan my workday", "I have 1 hour after work", "Help me balance work and games", "I have too many tasks"];
+  const [messages, setMessages] = useState<ChatMessage[]>([{ role: "mochi", text: "Hi Xin Yee! I’m Mochi, your planning buddy. I can sort your task list and draft a day around your work hours, lunch and personal time. 🌱" }]);
   const [input, setInput] = useState("");
   function send(text: string) {
     const trimmed = text.trim();
@@ -229,10 +354,11 @@ function AssistantPage({ data }: { data: MochimoData }) {
 function addOpenTime(blocks: ScheduleBlock[]) {
   const sorted = [...blocks].sort((a, b) => a.start.localeCompare(b.start));
   const result: ({ type: "block" } & ScheduleBlock | { type: "gap"; id: string; start: string; end: string })[] = [];
-  const dayStart = new Date();
-  dayStart.setHours(9, 0, 0, 0);
+  const dayStart = sorted.length ? new Date(sorted[0].start) : new Date();
+  const weekend = dayStart.getDay() === 0 || dayStart.getDay() === 6;
+  dayStart.setHours(weekend ? 9 : 7, 0, 0, 0);
   const dayEnd = new Date(dayStart);
-  dayEnd.setHours(21, 0, 0, 0);
+  dayEnd.setHours(22, 0, 0, 0);
   let cursor = dayStart.getTime();
   for (let index = 0; index < sorted.length; index += 1) {
     const block = sorted[index];
@@ -254,8 +380,17 @@ function sameDay(value: string, date: Date) {
   const candidate = new Date(value);
   return candidate.getFullYear() === date.getFullYear() && candidate.getMonth() === date.getMonth() && candidate.getDate() === date.getDate();
 }
-function longDate() {
-  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(new Date());
+function longDate(date: Date = new Date()) {
+  return new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric", year: "numeric" }).format(date);
+}
+function weekDates(anchor: Date) {
+  const monday = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(monday);
+    day.setDate(monday.getDate() + index);
+    return day;
+  });
 }
 function shortDate() {
   return new Intl.DateTimeFormat("en", { weekday: "short", month: "short", day: "numeric" }).format(new Date());

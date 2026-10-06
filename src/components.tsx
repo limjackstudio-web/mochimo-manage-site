@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ClipboardList,
   Clock3,
   Coffee,
   Ellipsis,
@@ -16,10 +17,11 @@ import {
 import { categoryColors, categoryLabels, formatDuration, formatTime, getBudget, minutesBetween } from "./services/planner";
 import type { Category, MochimoData, Priority, ScheduleBlock, Task } from "./types";
 
-export type View = "Dashboard" | "Tasks" | "Planner" | "Time Budget" | "Mochi AI";
+export type View = "Whiteboard" | "Dashboard" | "Tasks" | "Planner" | "Time Budget" | "Mochi AI";
 
 const categories = Object.keys(categoryLabels) as Category[];
 const navItems: { label: View; icon: typeof Flower2 }[] = [
+  { label: "Whiteboard", icon: ClipboardList },
   { label: "Dashboard", icon: Flower2 },
   { label: "Tasks", icon: Check },
   { label: "Planner", icon: CalendarDays },
@@ -30,7 +32,7 @@ const navItems: { label: View; icon: typeof Flower2 }[] = [
 export function Sidebar({ active, onNavigate }: { active: View; onNavigate: (view: View) => void }) {
   return (
     <aside className="sidebar">
-      <button className="brand" onClick={() => onNavigate("Dashboard")} aria-label="Mochimo home">
+      <button className="brand" onClick={() => onNavigate("Whiteboard")} aria-label="Mochimo home">
         <span className="brand-mark"><Flower2 size={21} /></span>
         <span>mochimo<span className="brand-period">.</span></span>
       </button>
@@ -117,9 +119,10 @@ export function TaskList({ tasks, onToggle, onEdit, onDelete, compact = false }:
   );
 }
 
-export function TaskDialog({ task, onClose, onSave }: { task?: Task; onClose: () => void; onSave: (task: Task) => void }) {
+export function TaskDialog({ task, defaultArea = "work", onClose, onSave }: { task?: Task; defaultArea?: Task["area"]; onClose: () => void; onSave: (task: Task) => void }) {
   const [title, setTitle] = useState(task?.title ?? "");
-  const [category, setCategory] = useState<Category>(task?.category ?? "website");
+  const [area, setArea] = useState<Task["area"]>(task?.area ?? defaultArea);
+  const [category, setCategory] = useState<Category>(task?.category ?? (defaultArea === "personal" ? "personal" : "internship"));
   const [priority, setPriority] = useState<Priority>(task?.priority ?? "medium");
   const [duration, setDuration] = useState(String(task?.estimatedMinutes ?? 60));
   const [actualDuration, setActualDuration] = useState(task?.actualMinutes === undefined ? "" : String(task.actualMinutes));
@@ -135,7 +138,7 @@ export function TaskDialog({ task, onClose, onSave }: { task?: Task; onClose: ()
     const actualMinutes = actualDuration.trim() ? Number(actualDuration) : undefined;
     if (actualMinutes !== undefined && (!Number.isFinite(actualMinutes) || actualMinutes < 0)) return;
     onSave({
-      id: task?.id ?? crypto.randomUUID(), title: title.trim(), category, priority,
+      id: task?.id ?? crypto.randomUUID(), title: title.trim(), area, category, priority,
       estimatedMinutes, energyLevel: energy, deadline: deadline ? new Date(deadline).toISOString() : undefined,
       notes: notes.trim(), status, actualMinutes,
       createdAt: task?.createdAt ?? new Date().toISOString(),
@@ -148,6 +151,7 @@ export function TaskDialog({ task, onClose, onSave }: { task?: Task; onClose: ()
         <div className="dialog-heading"><div><span className="eyebrow">{task ? "MAKE A CHANGE" : "ONE THING AT A TIME"}</span><h2>{task ? "Edit task" : "Add a task"}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="Close"><X size={19} /></button></div>
         <label className="field full">Task name<input autoFocus required value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What would you like to work on?" /></label>
         <div className="field-grid">
+          <label className="field">Area<select value={area} onChange={(e) => setArea(e.target.value as Task["area"])}><option value="work">Work / internship</option><option value="personal">Personal life</option></select></label>
           <label className="field">Category<select value={category} onChange={(e) => setCategory(e.target.value as Category)}>{categories.filter((item) => item !== "free").map((item) => <option value={item} key={item}>{categoryLabels[item]}</option>)}</select></label>
           <label className="field">Priority<select value={priority} onChange={(e) => setPriority(e.target.value as Priority)}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
           <label className="field">Estimated minutes<input type="number" min="1" max="1440" required value={duration} onChange={(e) => setDuration(e.target.value)} /></label>
@@ -163,11 +167,11 @@ export function TaskDialog({ task, onClose, onSave }: { task?: Task; onClose: ()
   );
 }
 
-export function ScheduleDialog({ onClose, onSave }: { onClose: () => void; onSave: (block: Omit<ScheduleBlock, "id">) => void }) {
+export function ScheduleDialog({ defaultDate = new Date(), onClose, onSave }: { defaultDate?: Date; onClose: () => void; onSave: (block: Omit<ScheduleBlock, "id">) => void }) {
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState<Category>("website");
-  const [start, setStart] = useState(defaultTime(18));
-  const [end, setEnd] = useState(defaultTime(19));
+  const [start, setStart] = useState(defaultTime(18, defaultDate));
+  const [end, setEnd] = useState(defaultTime(19, defaultDate));
   const [kind, setKind] = useState<ScheduleBlock["kind"]>("task");
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -194,8 +198,8 @@ function toLocalInput(value: string) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 16);
 }
-function defaultTime(hour: number) {
-  const date = new Date();
+function defaultTime(hour: number, baseDate = new Date()) {
+  const date = new Date(baseDate);
   date.setHours(hour, 0, 0, 0);
   return toLocalInput(date.toISOString());
 }

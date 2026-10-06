@@ -11,10 +11,12 @@ export type Priority = "low" | "medium" | "high";
 export type Energy = "low" | "medium" | "high";
 export type TaskStatus = "todo" | "in-progress" | "done";
 export type BlockKind = "task" | "commitment" | "break" | "free-time";
+export type TaskArea = "work" | "personal";
 
 export interface Task {
   id: string;
   title: string;
+  area: TaskArea;
   category: Category;
   priority: Priority;
   deadline?: string;
